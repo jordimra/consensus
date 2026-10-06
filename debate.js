@@ -48,7 +48,7 @@ export function normalizeState(raw) {
   const num = (v, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Number(v))) : 0);
   const str = v => (typeof v === 'string' ? v.slice(0, 5000) : '');
   return {
-    turn: Math.floor(num(s.turn, 100)),
+    turn: Math.floor(num(s.turn, 200)),
     positions: [str(s.positions?.[0]), str(s.positions?.[1])],
     totals: { tokens: num(s.totals?.tokens, 1e9), cost: num(s.totals?.cost, 1e6) },
     lastBody: str(s.lastBody),

@@ -12,6 +12,7 @@ A small Node.js app meant to run **locally for personal use**. You bring your ow
 - **Cost control:** limits per debate for rounds, tokens per reply, total tokens and estimated budget.
 - **Resilient:** handles provider rate limits with automatic retries, and pauses (instead of failing) when a limit or quota blocks the debate.
 - **Resumable:** a paused or stopped debate can be resumed later, even after reloading the page, optionally with a different model or account.
+- **Continue, clear, export:** if a debate ends without consensus, continue it for a number of extra rounds. Clear the conversation, or export it as Markdown or JSON.
 - **i18n ready:** all UI text lives in `locales/*.json`.
 
 ## Requirements
@@ -35,6 +36,7 @@ Open <http://localhost:3000>. Use the `PORT` environment variable to change the 
 3. **Write the question or argument.**
 4. **Set the limits** (see below). Optionally enter each account's price per 1M tokens to get a cost estimate.
 5. **Start the debate.** Replies appear turn by turn. You can stop at any time.
+6. **No consensus?** Set the *Extra rounds* and click *Continue* (raise the token or budget limit first if that is what stopped it). Use *Export* to download the conversation.
 
 ## How the debate works
 

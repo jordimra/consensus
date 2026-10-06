@@ -51,7 +51,7 @@
 <section>
   <h2 data-i18n="limits.title"></h2>
   <div class="row">
-    <label><span data-i18n="limits.maxRounds"></span><input id="maxRounds" class="num" type="number" min="1" max="20" value="6"></label>
+    <label><span data-i18n="limits.maxRounds"></span><input id="maxRounds" class="num" type="number" min="1" max="100" value="6"></label>
     <label><span data-i18n="limits.maxTokensPerTurn"></span><input id="maxTokensPerTurn" class="num" type="number" min="100" max="4000" value="1024"></label>
     <label><span data-i18n="limits.maxTotalTokens"></span><input id="maxTotalTokens" class="num" type="number" min="1000" value="20000"></label>
     <label><span data-i18n="limits.maxBudget"></span><input id="maxBudget" class="num" type="number" min="0" step="any" value="0"></label>
@@ -62,6 +62,15 @@
     <button id="resume" class="primary" data-i18n="actions.resume" hidden></button>
     <span id="meterTokens" class="meta"></span>
     <span id="meterCost" class="meta"></span>
+  </div>
+  <div id="continueBox" class="row" hidden>
+    <label><span data-i18n="continue.extraRounds"></span><input id="extraRounds" class="num" type="number" min="1" max="100" value="3"></label>
+    <button id="continue" class="primary" data-i18n="actions.continue"></button>
+  </div>
+  <div class="row">
+    <button id="clear" data-i18n="actions.clear" disabled></button>
+    <select id="exportFormat" disabled><option value="md">Markdown</option><option value="json">JSON</option></select>
+    <button id="export" data-i18n="actions.export" disabled></button>
   </div>
 </section>
 
@@ -96,14 +105,22 @@ let resumeState = null; // engine state used to continue a paused or stopped deb
 let lastState = null;
 let turns = []; // rendered turns, kept to restore the transcript after a reload
 let lastTotals = { tokens: 0, cost: 0 };
+let info = null; // { reason, final } once the debate has ended
+let debateQuestion = ''; // question of the debate on screen (the textarea may change afterwards)
 const save = () => localStorage.setItem('accounts', JSON.stringify(accounts));
 
 function updateStart() {
   const ready = selected.length === 2 && selected.every(Boolean);
+  const ended = !!info?.reason; // finished without consensus: it can be continued with extra rounds
   $('start').disabled = running || !ready || !$('question').value.trim();
   $('stop').disabled = !running;
-  $('resume').hidden = !resumeState;
+  $('resume').hidden = !resumeState || ended;
   $('resume').disabled = running || !ready;
+  $('continueBox').hidden = !resumeState || !ended;
+  $('continue').disabled = running || !ready;
+  $('clear').disabled = running || !turns.length;
+  $('export').disabled = !turns.length;
+  $('exportFormat').disabled = !turns.length;
 }
 
 function toggle(id) {
@@ -201,22 +218,25 @@ function renderTurn(turn) {
 // The session holds no API keys: only the question, the slots, the transcript and the engine state.
 function saveSession() {
   try {
-    if (!lastState) localStorage.removeItem('session');
-    else localStorage.setItem('session', JSON.stringify({ question: $('question').value, selected, state: lastState, turns, totals: lastTotals }));
+    if (!turns.length) localStorage.removeItem('session');
+    else localStorage.setItem('session', JSON.stringify({ question: debateQuestion, selected, state: lastState, turns, totals: lastTotals, info }));
   } catch { /* storage unavailable or full */ }
 }
 
 function restoreSession() {
   try {
     const saved = JSON.parse(localStorage.getItem('session') || 'null');
-    if (!saved?.state) return;
-    $('question').value = saved.question || '';
+    if (!saved?.turns?.length) return;
+    debateQuestion = saved.question || '';
+    $('question').value = debateQuestion;
     selected = (saved.selected || []).map(id => (accounts.some(a => a.id === id) ? id : null));
-    resumeState = lastState = saved.state;
-    turns = saved.turns || [];
+    turns = saved.turns;
     turns.forEach(renderTurn);
+    info = saved.info ?? null;
+    resumeState = lastState = saved.state ?? null;
     updateMeter(saved.totals || { tokens: 0, cost: 0 });
-    $('result').replaceChildren(h('p', { className: 'meta' }, t('pause.restored')));
+    if (info?.reason) showResult(info.reason, info.final);
+    else if (resumeState) $('result').replaceChildren(h('p', { className: 'meta' }, t('pause.restored')));
     renderAccounts();
   } catch { /* ignore a corrupt session */ }
 }
@@ -229,6 +249,7 @@ function handleEvent(ev) {
     renderTurn(turns.at(-1));
     updateMeter(ev.totals);
     saveSession();
+    updateStart();
   } else if (ev.type === 'wait') {
     $('status').textContent = t('wait.message', { name: ev.name, seconds: ev.seconds, attempt: ev.attempt, max: ev.max });
   } else if (ev.type === 'paused') {
@@ -239,7 +260,8 @@ function handleEvent(ev) {
       h('p', { className: 'meta' }, t('pause.hint')),
     );
   } else if (ev.type === 'done') {
-    resumeState = lastState = null;
+    info = { reason: ev.reason, final: ev.final };
+    resumeState = lastState = ev.reason === 'consensus' ? null : lastState; // without consensus it can be continued
     $('status').textContent = '';
     updateMeter(ev.totals);
     showResult(ev.reason, ev.final);
@@ -249,13 +271,26 @@ function handleEvent(ev) {
   }
 }
 
-async function start(resume = false) {
+// resume: continue from the saved state. extraRounds > 0: continue a finished debate for that many more rounds.
+async function start(resume = false, extraRounds = 0) {
+  const limits = limitsFromUi();
+  const state = resume ? resumeState : null;
+  if (extraRounds > 0) {
+    if (limits.maxTotalTokens <= lastTotals.tokens || (limits.maxBudget > 0 && limits.maxBudget <= lastTotals.cost)) {
+      $('status').textContent = t('continue.raiseLimit');
+      return;
+    }
+    limits.maxRounds = Math.min(100, Math.ceil(state.turn / 2) + extraRounds);
+    $('maxRounds').value = limits.maxRounds;
+  }
+
   running = true;
   controller = new AbortController();
-  const state = resume ? resumeState : null;
   lastState = state;
   resumeState = null;
+  info = null;
   if (!resume) {
+    debateQuestion = $('question').value.trim();
     turns = [];
     $('transcript').replaceChildren();
     updateMeter({ tokens: 0, cost: 0 });
@@ -272,7 +307,7 @@ async function start(resume = false) {
     const res = await fetch('/api/debate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: $('question').value, participants, limits: limitsFromUi(), state }),
+      body: JSON.stringify({ question: debateQuestion, participants, limits, state }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(t('error.invalid_request'));
@@ -302,6 +337,54 @@ async function start(resume = false) {
   }
 }
 
+// ---- clear / export ----
+function clearConversation() {
+  if (running || (turns.length && !confirm(t('clear.confirm')))) return;
+  turns = [];
+  info = resumeState = lastState = null;
+  debateQuestion = '';
+  $('transcript').replaceChildren();
+  $('result').replaceChildren();
+  $('status').textContent = '';
+  updateMeter({ tokens: 0, cost: 0 });
+  saveSession();
+  updateStart();
+}
+
+function download(filename, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const link = h('a', { href: url, download: filename });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportDebate(format) {
+  if (!turns.length) return;
+  const stamp = new Date().toISOString();
+  const base = `consensus-${stamp.slice(0, 16).replace(/[:T]/g, '-')}`;
+  const participants = [...new Set(turns.map(x => x.name))];
+  if (format === 'json') {
+    download(`${base}.json`, JSON.stringify({ date: stamp, question: debateQuestion, participants, turns, result: info, totals: lastTotals }, null, 2), 'application/json');
+    return;
+  }
+  const lines = [
+    '# consensus', '',
+    `**${t('export.question')}:** ${debateQuestion}`, '',
+    `**${t('export.participants')}:** ${participants.join(' / ')}`, '',
+    `**${t('export.date')}:** ${stamp}`, '',
+    `**${t('export.usage', { tokens: lastTotals.tokens, cost: lastTotals.cost.toFixed(4) })}**`, '',
+  ];
+  for (const turn of turns) {
+    lines.push(`## ${turn.index + 1}. ${turn.name} — ${t(turn.agree ? 'turn.agree.yes' : 'turn.agree.no')}`, '', turn.body, '');
+    if (turn.position) lines.push(`*${t('turn.position')}: ${turn.position}*`, '');
+  }
+  if (info?.final) lines.push(`## ${t('result.final')}`, '', info.final, '');
+  if (info?.reason) lines.push(`*${t('result.reason', { reason: t('stop.' + info.reason) })}*`, '');
+  download(`${base}.md`, lines.join('\n'), 'text/markdown');
+}
+
 // ---- init ----
 (async () => {
   await loadLocale(navigator.language.slice(0, 2));
@@ -310,6 +393,9 @@ async function start(resume = false) {
   $('addAccount').onclick = addAccount;
   $('start').onclick = () => start(false);
   $('resume').onclick = () => start(true);
+  $('continue').onclick = () => start(true, Math.max(1, Number($('extraRounds').value) || 1));
+  $('clear').onclick = clearConversation;
+  $('export').onclick = () => exportDebate($('exportFormat').value);
   $('stop').onclick = () => controller?.abort();
   $('question').oninput = updateStart;
   renderAccounts();

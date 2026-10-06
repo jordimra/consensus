@@ -43,5 +43,15 @@
   "pause.hint": "Your progress is saved. Resume when the limit is lifted, or change the model / replace the account of the failing AI first (it keeps its turn order).",
   "error.rate_limited": "Rate limit reached",
   "error.quota_exhausted": "Quota or credits exhausted",
-  "pause.restored": "Previous debate restored from this browser. You can resume it."
+  "pause.restored": "Previous debate restored from this browser. You can resume it.",
+  "actions.clear": "Clear conversation",
+  "actions.export": "Export",
+  "actions.continue": "Continue",
+  "clear.confirm": "Clear the conversation? This cannot be undone.",
+  "continue.extraRounds": "Extra rounds",
+  "continue.raiseLimit": "Raise the max total tokens or the budget before continuing.",
+  "export.question": "Question",
+  "export.participants": "Participants",
+  "export.date": "Date",
+  "export.usage": "Tokens: {tokens} · Estimated cost: ${cost}"
 }

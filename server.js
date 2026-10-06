@@ -71,7 +71,7 @@ app.post('/api/debate', async (req, res) => {
       priceOut: clamp(p.priceOut, 0, 1000, 0),
     })),
     limits: {
-      maxRounds: clamp(limits.maxRounds, 1, 20, 6),
+      maxRounds: clamp(limits.maxRounds, 1, 100, 6),
       maxTokensPerTurn: clamp(limits.maxTokensPerTurn, 100, 4000, 1024),
       maxTotalTokens: clamp(limits.maxTotalTokens, 1000, 500000, 20000),
       maxBudget: clamp(limits.maxBudget, 0, 1000, 0),
