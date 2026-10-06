@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>consensus</title>
+<style>
+  :root { color-scheme: light dark; --b: #8884; --accent: #4f46e5; --ok: #059669; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 860px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.3rem; margin-bottom: 0; }
+  h2 { font-size: 1rem; margin: 0 0 8px; }
+  section { border: 1px solid var(--b); border-radius: 10px; padding: 12px; margin: 12px 0; }
+  input, select, textarea, button { font: inherit; padding: 6px 8px; border: 1px solid var(--b); border-radius: 6px; background: transparent; color: inherit; }
+  textarea { width: 100%; box-sizing: border-box; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  .badge { display: inline-block; min-width: 1.4em; text-align: center; border-radius: 99px; background: var(--accent); color: #fff; padding: 0 6px; }
+  .turn { border-left: 3px solid var(--accent); padding: 4px 10px; margin: 10px 0; }
+  .turn.second { border-color: var(--ok); }
+  .turn p { white-space: pre-wrap; margin: 6px 0; }
+  .meta { opacity: .7; font-size: .85em; }
+  .final { border: 2px solid var(--ok); border-radius: 10px; padding: 10px; margin-top: 12px; white-space: pre-wrap; }
+  .error { color: #dc2626; }
+  label { display: flex; gap: 4px; align-items: center; }
+  .num { width: 90px; }
+</style>
+</head>
+<body>
+<h1 data-i18n="app.title">consensus</h1>
+<p class="meta" data-i18n="app.subtitle"></p>
+
+<section>
+  <h2 data-i18n="accounts.title"></h2>
+  <div class="row">
+    <select id="provider"></select>
+    <input id="apiKey" type="password" autocomplete="off" data-i18n-placeholder="accounts.apiKey" style="flex:1;min-width:160px">
+    <button id="addAccount" data-i18n="accounts.add"></button>
+  </div>
+  <div id="accountError" class="error"></div>
+  <div id="accounts"></div>
+  <p class="meta" data-i18n="accounts.hint"></p>
+</section>
+
+<section>
+  <h2 data-i18n="question.title"></h2>
+  <textarea id="question" rows="3" data-i18n-placeholder="question.placeholder"></textarea>
+</section>
+
+<section>
+  <h2 data-i18n="limits.title"></h2>
+  <div class="row">
+    <label><span data-i18n="limits.maxRounds"></span><input id="maxRounds" class="num" type="number" min="1" max="20" value="6"></label>
+    <label><span data-i18n="limits.maxTokensPerTurn"></span><input id="maxTokensPerTurn" class="num" type="number" min="100" max="4000" value="1024"></label>
+    <label><span data-i18n="limits.maxTotalTokens"></span><input id="maxTotalTokens" class="num" type="number" min="1000" value="20000"></label>
+    <label><span data-i18n="limits.maxBudget"></span><input id="maxBudget" class="num" type="number" min="0" step="any" value="0"></label>
+  </div>
+  <div class="row">
+    <button id="start" class="primary" data-i18n="actions.start" disabled></button>
+    <button id="stop" data-i18n="actions.stop" disabled></button>
+    <button id="resume" class="primary" data-i18n="actions.resume" hidden></button>
+    <span id="meterTokens" class="meta"></span>
+    <span id="meterCost" class="meta"></span>
+  </div>
+</section>
+
+<div id="status" class="meta"></div>
+<div id="transcript"></div>
+<div id="result"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const h = (tag, props = {}, ...children) => {
+  const el = Object.assign(document.createElement(tag), props);
+  el.append(...children.flat().filter(c => c != null));
+  return el;
+};
+
+// ---- i18n ----
+let messages = {};
+const t = (key, vars = {}) => (messages[key] ?? key).replace(/\{(\w+)\}/g, (_, v) => vars[v] ?? '');
+async function loadLocale(lang) {
+  messages = await (await fetch(`/api/locales/${lang}`)).json();
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-i18n]').forEach(el => (el.textContent = t(el.dataset.i18n)));
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => (el.placeholder = t(el.dataset.i18nPlaceholder)));
+}
+
+// ---- state ----
+let accounts = JSON.parse(localStorage.getItem('accounts') || '[]'); // { id, provider, label, apiKey, models, model, priceIn, priceOut }
+let selected = []; // account ids, in selection order
+let running = false;
+let controller = null;
+let resumeState = null; // engine state used to continue a paused or stopped debate
+let lastState = null;
+let turns = []; // rendered turns, kept to restore the transcript after a reload
+let lastTotals = { tokens: 0, cost: 0 };
+const save = () => localStorage.setItem('accounts', JSON.stringify(accounts));
+
+function updateStart() {
+  const ready = selected.length === 2 && selected.every(Boolean);
+  $('start').disabled = running || !ready || !$('question').value.trim();
+  $('stop').disabled = !running;
+  $('resume').hidden = !resumeState;
+  $('resume').disabled = running || !ready;
+}
+
+function toggle(id) {
+  const idx = selected.indexOf(id);
+  if (idx >= 0) {
+    if (resumeState) selected[idx] = null; // keep the slot: a replacement takes over the same turn order
+    else selected.splice(idx, 1);
+  } else if (selected.includes(null)) selected[selected.indexOf(null)] = id;
+  else if (selected.length < 2) selected.push(id);
+  renderAccounts();
+}
+
+function removeAccount(id) {
+  if (selected.includes(id)) toggle(id);
+  accounts = accounts.filter(a => a.id !== id);
+  save();
+  renderAccounts();
+}
+
+function renderAccounts() {
+  const box = $('accounts');
+  box.replaceChildren();
+  for (const acc of accounts) {
+    const order = selected.indexOf(acc.id) + 1;
+    box.append(h('div', { className: 'row' },
+      order ? h('span', { className: 'badge' }, String(order)) : null,
+      h('strong', {}, acc.label),
+      h('select', { onchange: e => { acc.model = e.target.value; save(); } },
+        acc.models.map(m => h('option', { value: m, selected: m === acc.model }, m))),
+      h('input', { className: 'num', type: 'number', min: 0, step: 'any', placeholder: t('accounts.priceIn'), value: acc.priceIn || '',
+        oninput: e => { acc.priceIn = Number(e.target.value) || 0; save(); } }),
+      h('input', { className: 'num', type: 'number', min: 0, step: 'any', placeholder: t('accounts.priceOut'), value: acc.priceOut || '',
+        oninput: e => { acc.priceOut = Number(e.target.value) || 0; save(); } }),
+      h('button', { onclick: () => toggle(acc.id) }, t(order ? 'accounts.deselect' : 'accounts.select')),
+      h('button', { title: t('accounts.remove'), onclick: () => removeAccount(acc.id) }, '✕'),
+    ));
+  }
+  updateStart();
+}
+
+async function addAccount() {
+  const provider = $('provider').value;
+  const apiKey = $('apiKey').value.trim();
+  if (!apiKey) return;
+  $('accountError').textContent = t('accounts.loading');
+  $('addAccount').disabled = true;
+  try {
+    const res = await fetch('/api/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(`${t('error.' + data.error)}${data.message ? ': ' + data.message : ''}`);
+    const label = $('provider').selectedOptions[0].textContent;
+    accounts.push({ id: crypto.randomUUID(), provider, label, apiKey, models: data.models, model: data.models[0], priceIn: 0, priceOut: 0 });
+    save();
+    $('apiKey').value = '';
+    $('accountError').textContent = '';
+    renderAccounts();
+  } catch (err) {
+    $('accountError').textContent = err.message;
+  } finally {
+    $('addAccount').disabled = false;
+  }
+}
+
+// ---- debate ----
+const limitsFromUi = () => ({
+  maxRounds: Number($('maxRounds').value),
+  maxTokensPerTurn: Number($('maxTokensPerTurn').value),
+  maxTotalTokens: Number($('maxTotalTokens').value),
+  maxBudget: Number($('maxBudget').value),
+});
+
+function updateMeter(totals) {
+  lastTotals = totals;
+  const limits = limitsFromUi();
+  $('meterTokens').textContent = t('meter.tokens', { used: totals.tokens, limit: limits.maxTotalTokens });
+  $('meterCost').textContent = t('meter.cost', { used: totals.cost.toFixed(4), limit: limits.maxBudget > 0 ? '$' + limits.maxBudget : '∞' });
+}
+
+function showResult(reason, final) {
+  $('result').replaceChildren(
+    final ? h('div', { className: 'final' }, h('strong', {}, t('result.final')), h('br'), final) : null,
+    h('p', { className: 'meta' }, t('result.reason', { reason: t('stop.' + reason) })),
+  );
+}
+
+function renderTurn(turn) {
+  $('transcript').append(h('div', { className: 'turn' + (turn.index % 2 ? ' second' : '') },
+    h('strong', {}, turn.name),
+    h('span', { className: 'meta' }, ` · ${t(turn.agree ? 'turn.agree.yes' : 'turn.agree.no')}`),
+    h('p', {}, turn.body),
+    turn.position ? h('div', { className: 'meta' }, `${t('turn.position')}: ${turn.position}`) : null,
+  ));
+}
+
+// The session holds no API keys: only the question, the slots, the transcript and the engine state.
+function saveSession() {
+  try {
+    if (!lastState) localStorage.removeItem('session');
+    else localStorage.setItem('session', JSON.stringify({ question: $('question').value, selected, state: lastState, turns, totals: lastTotals }));
+  } catch { /* storage unavailable or full */ }
+}
+
+function restoreSession() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('session') || 'null');
+    if (!saved?.state) return;
+    $('question').value = saved.question || '';
+    selected = (saved.selected || []).map(id => (accounts.some(a => a.id === id) ? id : null));
+    resumeState = lastState = saved.state;
+    turns = saved.turns || [];
+    turns.forEach(renderTurn);
+    updateMeter(saved.totals || { tokens: 0, cost: 0 });
+    $('result').replaceChildren(h('p', { className: 'meta' }, t('pause.restored')));
+    renderAccounts();
+  } catch { /* ignore a corrupt session */ }
+}
+
+function handleEvent(ev) {
+  if (ev.type === 'turn') {
+    lastState = ev.state;
+    $('status').textContent = '';
+    turns.push({ index: ev.index, name: ev.name, body: ev.body, position: ev.position, agree: ev.agree });
+    renderTurn(turns.at(-1));
+    updateMeter(ev.totals);
+    saveSession();
+  } else if (ev.type === 'wait') {
+    $('status').textContent = t('wait.message', { name: ev.name, seconds: ev.seconds, attempt: ev.attempt, max: ev.max });
+  } else if (ev.type === 'paused') {
+    lastState = resumeState = ev.state;
+    $('status').textContent = '';
+    $('result').replaceChildren(
+      h('p', { className: 'error' }, `${t('pause.title')} — ${t('error.' + ev.code)}: ${ev.message}`),
+      h('p', { className: 'meta' }, t('pause.hint')),
+    );
+  } else if (ev.type === 'done') {
+    resumeState = lastState = null;
+    $('status').textContent = '';
+    updateMeter(ev.totals);
+    showResult(ev.reason, ev.final);
+  } else if (ev.type === 'error') {
+    resumeState = lastState;
+    $('result').replaceChildren(h('p', { className: 'error' }, `${t('error.' + ev.code)}: ${ev.message}`));
+  }
+}
+
+async function start(resume = false) {
+  running = true;
+  controller = new AbortController();
+  const state = resume ? resumeState : null;
+  lastState = state;
+  resumeState = null;
+  if (!resume) {
+    turns = [];
+    $('transcript').replaceChildren();
+    updateMeter({ tokens: 0, cost: 0 });
+  }
+  $('result').replaceChildren();
+  $('status').textContent = '';
+  updateStart();
+
+  const participants = selected
+    .map(id => accounts.find(a => a.id === id))
+    .map(({ provider, apiKey, model, priceIn, priceOut }) => ({ provider, apiKey, model, priceIn, priceOut }));
+
+  try {
+    const res = await fetch('/api/debate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: $('question').value, participants, limits: limitsFromUi(), state }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(t('error.invalid_request'));
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const chunk = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (chunk.startsWith('data: ')) handleEvent(JSON.parse(chunk.slice(6)));
+      }
+    }
+  } catch (err) {
+    resumeState = lastState; // a stopped or interrupted debate can be resumed from the last completed turn
+    if (err.name === 'AbortError') showResult('stopped');
+    else $('result').replaceChildren(h('p', { className: 'error' }, err.message));
+  } finally {
+    running = false;
+    $('status').textContent = '';
+    saveSession();
+    updateStart();
+  }
+}
+
+// ---- init ----
+(async () => {
+  await loadLocale(navigator.language.slice(0, 2));
+  const providers = await (await fetch('/api/providers')).json();
+  $('provider').append(...providers.map(p => h('option', { value: p.id }, p.label)));
+  $('addAccount').onclick = addAccount;
+  $('start').onclick = () => start(false);
+  $('resume').onclick = () => start(true);
+  $('stop').onclick = () => controller?.abort();
+  $('question').oninput = updateStart;
+  renderAccounts();
+  restoreSession();
+})();
+</script>
+</body>
+</html>
