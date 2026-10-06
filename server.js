@@ -7,6 +7,8 @@ import { runDebate } from './debate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+// Local by default. Hosting platforms need 0.0.0.0 (set HOST, or it is picked automatically on Render).
+const HOST = process.env.HOST || (process.env.RENDER ? '0.0.0.0' : '127.0.0.1');
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
@@ -55,7 +57,7 @@ app.post('/api/debate', async (req, res) => {
 
   const controller = new AbortController();
   res.on('close', () => controller.abort());
-  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
   res.flushHeaders();
   const send = event => res.write(`data: ${JSON.stringify(event)}\n\n`);
 
@@ -87,5 +89,5 @@ app.post('/api/debate', async (req, res) => {
   res.end();
 });
 
-// Bound to localhost only: API keys travel from the browser to this local server.
-app.listen(PORT, '127.0.0.1', () => console.log(`consensus running at http://localhost:${PORT}`));
+// API keys travel from the browser to this server on every request, so keep it on localhost unless you trust the host.
+app.listen(PORT, HOST, () => console.log(`consensus running on ${HOST}:${PORT}`));

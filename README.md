@@ -77,12 +77,16 @@ Telling a temporary limit from an exhausted quota relies on the provider's error
 
 ## Data and security
 
-- The server listens on `127.0.0.1` only.
+- By default the server listens on `127.0.0.1` only. Set `HOST=0.0.0.0` to expose it (see *Deploying*).
 - API keys are stored in your browser's `localStorage` and sent to the local server on each request. The server never writes them to disk.
 - The saved debate session (question, transcript, state) is also in `localStorage` and contains **no API keys**.
 - Your questions and the model replies are sent to the providers you choose, under their terms.
 
-This is a single-user tool. It has no authentication, so do not expose it to a network as is.
+This is a single-user tool. It has no authentication, so do not expose it to a network as is: anyone with the URL could use the app (with their own keys) and the server would see those keys.
+
+## Deploying
+
+Any Node host works (build command `npm install`, start command `npm start`). The server reads `PORT` from the environment and, when `HOST` is not set, binds to `127.0.0.1`, which a hosting platform cannot reach. Set `HOST=0.0.0.0` (on Render this is picked automatically through the `RENDER` variable). Remember the note above about authentication.
 
 ## Project structure
 
